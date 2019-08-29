@@ -261,6 +261,99 @@ class ChineseFullTokenizer(object):
   def convert_ids_to_tokens(self, ids):
     return tokenization.convert_by_vocab(self.inv_vocab, ids)
 
+
+def read_cmrc2018_examples(input_file, is_training):
+  """Read a cmrc2018 json file into a list of Example."""
+  with tf.gfile.Open(input_file, "r") as reader:
+    input_data = json.load(reader)
+
+  #
+  examples = []
+  for entry in input_data:
+      paragraph = entry
+      paragraph_text = paragraph["context_text"]
+      if FLAGS.do_lower_case:
+          paragraph_text = paragraph_text.lower()
+      raw_doc_tokens = customize_tokenizer(paragraph_text,do_lower_case=FLAGS.do_lower_case)
+      doc_tokens = []
+      char_to_word_offset = []
+      prev_is_whitespace = True
+
+      k = 0
+      temp_word = ""
+      for c in paragraph_text:
+        if tokenization._is_whitespace(c):
+          char_to_word_offset.append(k-1)
+          continue
+        else:
+          temp_word += c
+          char_to_word_offset.append(k)
+        if FLAGS.do_lower_case:
+          temp_word = temp_word.lower()
+        if temp_word == raw_doc_tokens[k]:
+          doc_tokens.append(temp_word)
+          temp_word = ""
+          k += 1
+     # print(paragraph_text)
+     # print(raw_doc_tokens)
+     # print(k)
+     # print(len(raw_doc_tokens))
+      assert k==len(raw_doc_tokens)
+
+      for qa in paragraph["qas"]:
+        qas_id = qa["query_id"]
+        question_text = qa["query_text"]
+        start_position = None
+        end_position = None
+        orig_answer_text = None
+
+        if is_training:
+          answer = qa["answers"][0]
+          if FLAGS.do_lower_case:
+            orig_answer_text = str(answer).lower()
+          else:
+            orig_answer_text = str(answer)
+
+          if orig_answer_text not in paragraph_text:
+            print(orig_answer_text)
+            print(paragraph_text)
+
+            tf.logging.warning("Could not find answer")
+          else:
+            answer_offset = paragraph_text.index(orig_answer_text)
+            answer_length = len(orig_answer_text)
+            start_position = char_to_word_offset[answer_offset]
+            end_position = char_to_word_offset[answer_offset + answer_length - 1]
+
+            # Only add answers where the text can be exactly recovered from the
+            # document. If this CAN'T happen it's likely due to weird Unicode
+            # stuff so we will just skip the example.
+            #
+            # Note that this means for training mode, every example is NOT
+            # guaranteed to be preserved.
+            actual_text = "".join(
+                doc_tokens[start_position:(end_position + 1)])
+            cleaned_answer_text = "".join(
+                tokenization.whitespace_tokenize(orig_answer_text))
+            if actual_text.find(cleaned_answer_text) == -1:
+              pdb.set_trace()
+              tf.logging.warning("Could not find answer: '%s' vs. '%s'", actual_text, cleaned_answer_text)
+              continue
+
+        example = SquadExample(
+            qas_id=qas_id,
+            question_text=question_text,
+            doc_tokens=doc_tokens,
+            orig_answer_text=orig_answer_text,
+            start_position=start_position,
+            end_position=end_position)
+      #  if qas_id == "TRAIN_2264_QUERY_0":
+      #      print(example)
+      #      input()
+        examples.append(example)
+  tf.logging.info("**********read_cmrc2018_examples complete!**********")
+  
+  return examples
 #
 def read_squad_examples(input_file, is_training):
   """Read a SQuAD json file into a list of SquadExample."""
@@ -328,7 +421,8 @@ def read_squad_examples(input_file, is_training):
               pdb.set_trace()
               tf.logging.warning("Could not find answer: '%s' vs. '%s'", actual_text, cleaned_answer_text)
               continue
-
+        if not isinstance(start_position,int):
+            raise('start_position Error')
         example = SquadExample(
             qas_id=qas_id,
             question_text=question_text,
@@ -349,7 +443,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
 
   unique_id = 1000000000
   tokenizer = ChineseFullTokenizer(vocab_file=FLAGS.vocab_file, do_lower_case=FLAGS.do_lower_case)
-
+  
   for (example_index, example) in enumerate(examples):
     query_tokens = tokenizer.tokenize(example.question_text)
 
@@ -368,6 +462,9 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
 
     tok_start_position = None
     tok_end_position = None
+  #  print(example)
+  #  print(orig_to_tok_index)
+  #  print(example.start_position)
     if is_training:
       tok_start_position = orig_to_tok_index[example.start_position]
       if example.end_position < len(example.doc_tokens) - 1:
@@ -1165,7 +1262,7 @@ def main(_):
   num_train_steps = None
   num_warmup_steps = None
   if FLAGS.do_train:
-    train_examples = read_squad_examples(input_file=FLAGS.train_file, is_training=True)
+    train_examples = read_cmrc2018_examples(input_file=FLAGS.train_file, is_training=True)
 
     # Pre-shuffle the input to avoid having to make a very large shuffle
     # buffer in in the `input_fn`.
@@ -1230,7 +1327,7 @@ def main(_):
 
   # do predictions
   if FLAGS.do_predict:
-    eval_examples = read_squad_examples(
+    eval_examples = read_cmrc2018_examples(
         input_file=FLAGS.predict_file, is_training=False)
 
     eval_writer = FeatureWriter(
@@ -1294,7 +1391,7 @@ def main(_):
 
   # do predictions
   if FLAGS.do_eval:
-    eval_examples = read_squad_examples(
+    eval_examples = read_cmrc2018_examples(
         input_file=FLAGS.eval_file, is_training=False)
 
     eval_writer = FeatureWriter(
